@@ -1,21 +1,25 @@
 use super::forces::SimCommand;
 use super::state::SimulationState;
-use crate::config::SimulationConfig;
+use crate::config::{ScalarAdvectionKind, SimulationConfig};
 #[cfg(any(debug_assertions, feature = "sanity-checks"))]
 use crate::math::operators::all_finite;
 use crate::util::timer::FrameTimer;
 
-use super::advection::{advect_scalar, advect_velocity};
-use super::boundary::{apply_scalar_boundary, apply_velocity_boundary, ScalarBoundary, VelocityBoundary};
-use super::diffusion::{diffuse_scalar, diffuse_velocity};
+use super::advection::{advect_scalar, advect_scalar_maccormack, advect_velocity};
+use super::boundary::{
+    apply_scalar_boundary_with_solids, apply_velocity_boundary_with_solids, ScalarBoundary,
+    VelocityBoundary,
+};
+use super::diffusion::{diffuse_scalar_with_solids, diffuse_velocity_with_solids};
 use super::effects::{compute_vorticity, max_abs_vorticity, BuiltinEffect, SolverEffect};
 use super::forces::apply_commands;
-use super::pressure::project_velocity;
+use super::pressure::{project_velocity, PressureSolverRuntime};
 
 #[derive(Debug, Clone)]
 pub struct FluidSolver {
     config: SimulationConfig,
     effects: Vec<BuiltinEffect>,
+    pressure_solver: PressureSolverRuntime,
     velocity_boundary: VelocityBoundary,
     scalar_boundary: ScalarBoundary,
 }
@@ -24,6 +28,10 @@ impl FluidSolver {
     pub fn new(config: SimulationConfig) -> Self {
         Self {
             effects: BuiltinEffect::from_config(&config),
+            pressure_solver: PressureSolverRuntime::new(
+                config.pressure_solver,
+                config.pressure_tolerance,
+            ),
             config,
             velocity_boundary: VelocityBoundary::NoSlipBox,
             scalar_boundary: ScalarBoundary::ZeroGradientBox,
@@ -44,8 +52,14 @@ impl FluidSolver {
     }
 
     pub fn step(&mut self, state: &mut SimulationState, commands: &[SimCommand]) {
-        assert_eq!(state.grid.nx, self.config.grid_width, "grid width must match solver config");
-        assert_eq!(state.grid.ny, self.config.grid_height, "grid height must match solver config");
+        assert_eq!(
+            state.grid.nx, self.config.grid_width,
+            "grid width must match solver config"
+        );
+        assert_eq!(
+            state.grid.ny, self.config.grid_height,
+            "grid height must match solver config"
+        );
         assert!(
             (state.grid.cell_size - self.config.cell_size).abs() < f32::EPSILON,
             "cell size must match solver config"
@@ -60,16 +74,21 @@ impl FluidSolver {
             debug_validate_stage(effect.name(), state);
         }
 
-        apply_velocity_boundary(&mut state.velocity, self.velocity_boundary);
-        apply_scalar_boundary(&mut state.density, self.scalar_boundary);
+        apply_velocity_boundary_with_solids(
+            &mut state.velocity,
+            self.velocity_boundary,
+            &state.solids,
+        );
+        apply_scalar_boundary_with_solids(&mut state.density, self.scalar_boundary, &state.solids);
         debug_validate_stage("post-boundaries", state);
 
-        diffuse_velocity(
+        diffuse_velocity_with_solids(
             &state.velocity,
             self.config.viscosity,
             self.config.dt,
             self.config.solver_iterations,
             self.velocity_boundary,
+            &state.solids,
             &mut state.scratch.velocity0,
         );
         std::mem::swap(&mut state.velocity, &mut state.scratch.velocity0);
@@ -79,56 +98,85 @@ impl FluidSolver {
             &mut state.velocity,
             &mut state.pressure,
             &mut state.divergence,
+            &state.solids,
             self.config.solver_iterations,
             self.velocity_boundary,
             self.scalar_boundary,
+            &mut state.scratch,
+            &mut self.pressure_solver,
         );
         debug_validate_stage("post-project-1", state);
 
-        advect_velocity(&state.velocity, self.config.dt, &mut state.scratch.velocity0);
+        advect_velocity(
+            &state.velocity,
+            self.config.dt,
+            &mut state.scratch.velocity0,
+        );
         std::mem::swap(&mut state.velocity, &mut state.scratch.velocity0);
-        apply_velocity_boundary(&mut state.velocity, self.velocity_boundary);
+        apply_velocity_boundary_with_solids(
+            &mut state.velocity,
+            self.velocity_boundary,
+            &state.solids,
+        );
         debug_validate_stage("post-advect-velocity", state);
 
-        let max_divergence = project_velocity(
+        let projection = project_velocity(
             &mut state.velocity,
             &mut state.pressure,
             &mut state.divergence,
+            &state.solids,
             self.config.solver_iterations,
             self.velocity_boundary,
             self.scalar_boundary,
+            &mut state.scratch,
+            &mut self.pressure_solver,
         );
         debug_validate_stage("post-project-2", state);
 
-        diffuse_scalar(
+        diffuse_scalar_with_solids(
             &state.density,
             self.config.diffusion,
             self.config.dt,
             self.config.solver_iterations,
             self.scalar_boundary,
+            &state.solids,
             &mut state.scratch.scalar0,
         );
         std::mem::swap(&mut state.density, &mut state.scratch.scalar0);
         debug_validate_stage("post-diffuse-density", state);
 
-        advect_scalar(
-            &state.density,
-            &state.velocity,
-            self.config.dt,
-            &mut state.scratch.scalar0,
-        );
+        match self.config.scalar_advection {
+            ScalarAdvectionKind::SemiLagrangian => {
+                advect_scalar(
+                    &state.density,
+                    &state.velocity,
+                    self.config.dt,
+                    &mut state.scratch.scalar0,
+                );
+            }
+            ScalarAdvectionKind::MacCormack => {
+                advect_scalar_maccormack(
+                    &state.density,
+                    &state.velocity,
+                    self.config.dt,
+                    &mut state.scratch.scalar1,
+                    &mut state.scratch.scalar2,
+                    &mut state.scratch.scalar0,
+                );
+            }
+        }
         std::mem::swap(&mut state.density, &mut state.scratch.scalar0);
-        apply_scalar_boundary(&mut state.density, self.scalar_boundary);
+        apply_scalar_boundary_with_solids(&mut state.density, self.scalar_boundary, &state.solids);
         debug_validate_stage("post-advect-density", state);
 
         compute_vorticity(&state.velocity, &mut state.vorticity);
         debug_validate_stage("post-vorticity", state);
 
-        state.stats.max_divergence = max_divergence;
+        state.stats.max_divergence = projection.max_divergence;
         state.stats.max_vorticity = max_abs_vorticity(&state.vorticity);
         state.stats.cfl = estimate_cfl(&state.velocity, self.config.dt);
         state.stats.step_ms = timer.elapsed().as_secs_f64() as f32 * 1000.0;
-        state.stats.pressure_iterations = self.config.solver_iterations;
+        state.stats.pressure_iterations = projection.iterations_used;
 
         debug_validate_stage("post-stats", state);
     }
@@ -298,7 +346,7 @@ mod tests {
         assert_eq!(state.stats.pressure_iterations, expected_iterations);
         assert_eq!(
             state.stats.max_divergence,
-            max_abs_divergence(&state.divergence)
+            max_abs_divergence(&state.divergence, &state.solids)
         );
     }
 

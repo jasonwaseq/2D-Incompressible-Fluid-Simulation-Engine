@@ -4,7 +4,7 @@
 //! handling centralized instead of scattering it across advection, diffusion,
 //! and projection passes.
 
-use super::field::{MacVelocity, ScalarField};
+use super::field::{MacVelocity, ScalarField, SolidMask};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VelocityBoundary {
@@ -22,10 +22,38 @@ pub fn apply_scalar_boundary(field: &mut ScalarField, boundary: ScalarBoundary) 
     }
 }
 
+pub fn apply_scalar_boundary_with_solids(
+    field: &mut ScalarField,
+    boundary: ScalarBoundary,
+    solids: &SolidMask,
+) {
+    assert_eq!(
+        field.grid(),
+        solids.grid(),
+        "scalar field and solid mask grids must match"
+    );
+    apply_scalar_boundary(field, boundary);
+    apply_solid_scalar_cells(field, solids);
+}
+
 pub fn apply_velocity_boundary(velocity: &mut MacVelocity, boundary: VelocityBoundary) {
     match boundary {
         VelocityBoundary::NoSlipBox => apply_no_slip_box(velocity),
     }
+}
+
+pub fn apply_velocity_boundary_with_solids(
+    velocity: &mut MacVelocity,
+    boundary: VelocityBoundary,
+    solids: &SolidMask,
+) {
+    assert_eq!(
+        velocity.u.grid(),
+        solids.grid(),
+        "velocity field and solid mask grids must match"
+    );
+    apply_velocity_boundary(velocity, boundary);
+    apply_solid_velocity_faces(velocity, solids);
 }
 
 fn apply_zero_gradient_scalar(field: &mut ScalarField) {
@@ -91,10 +119,47 @@ fn apply_no_slip_box(velocity: &mut MacVelocity) {
     }
 }
 
+fn apply_solid_scalar_cells(field: &mut ScalarField, solids: &SolidMask) {
+    let grid = field.grid();
+
+    for j in 0..grid.ny {
+        for i in 0..grid.nx {
+            if solids.is_solid_cell(i, j) {
+                field.set_cell(i, j, 0.0);
+            }
+        }
+    }
+}
+
+fn apply_solid_velocity_faces(velocity: &mut MacVelocity, solids: &SolidMask) {
+    let grid = velocity.u.grid();
+
+    for j in 0..grid.ny {
+        for i in 0..=grid.nx {
+            if let Some(obstacle_velocity) = solids.u_face_obstacle_velocity(i, j) {
+                velocity.u.set_face(i, j, obstacle_velocity);
+            }
+        }
+    }
+
+    for j in 0..=grid.ny {
+        for i in 0..grid.nx {
+            if let Some(obstacle_velocity) = solids.v_face_obstacle_velocity(i, j) {
+                velocity.v.set_face(i, j, obstacle_velocity);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{apply_scalar_boundary, apply_velocity_boundary, ScalarBoundary, VelocityBoundary};
-    use crate::sim::field::{MacVelocity, ScalarField};
+    use glam::Vec2;
+
+    use super::{
+        apply_scalar_boundary, apply_scalar_boundary_with_solids, apply_velocity_boundary,
+        apply_velocity_boundary_with_solids, ScalarBoundary, VelocityBoundary,
+    };
+    use crate::sim::field::{MacVelocity, ScalarField, SolidMask};
     use crate::sim::grid::GridSize;
 
     #[test]
@@ -138,5 +203,34 @@ mod tests {
             assert_eq!(velocity.v.get_face(i, 0), 0.0);
             assert_eq!(velocity.v.get_face(i, grid.ny), 0.0);
         }
+    }
+
+    #[test]
+    fn obstacle_boundary_pins_faces_to_obstacle_velocity() {
+        let grid = GridSize::new(5, 5, 1.0).expect("grid should be valid");
+        let mut velocity = MacVelocity::zeros(grid);
+        let mut solids = SolidMask::empty(grid);
+        solids.set_solid_cell(2, 2, true);
+        solids.set_cell_velocity(2, 2, Vec2::new(1.5, -0.75));
+
+        apply_velocity_boundary_with_solids(&mut velocity, VelocityBoundary::NoSlipBox, &solids);
+
+        assert_eq!(velocity.u.get_face(2, 2), 1.5);
+        assert_eq!(velocity.u.get_face(3, 2), 1.5);
+        assert_eq!(velocity.v.get_face(2, 2), -0.75);
+        assert_eq!(velocity.v.get_face(2, 3), -0.75);
+    }
+
+    #[test]
+    fn scalar_boundary_zeroes_values_inside_solids() {
+        let grid = GridSize::new(4, 4, 1.0).expect("grid should be valid");
+        let mut field = ScalarField::new_filled(grid, 2.0);
+        let mut solids = SolidMask::empty(grid);
+        solids.set_solid_cell(1, 1, true);
+
+        apply_scalar_boundary_with_solids(&mut field, ScalarBoundary::ZeroGradientBox, &solids);
+
+        assert_eq!(field.get_cell(1, 1), 0.0);
+        assert_eq!(field.get_cell(0, 0), 2.0);
     }
 }

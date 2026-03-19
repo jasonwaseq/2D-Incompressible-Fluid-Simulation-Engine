@@ -109,11 +109,9 @@ mod tests {
 
     #[test]
     fn fixed_step_clock_consumes_multiple_steps() {
-        let mut clock = FixedStepClock::new(
-            Duration::from_millis(10),
-            Duration::from_secs_f32(0.25),
-        )
-        .expect("clock should construct");
+        let mut clock =
+            FixedStepClock::new(Duration::from_millis(10), Duration::from_secs_f32(0.25))
+                .expect("clock should construct");
 
         let steps = clock.accumulate_and_consume(Duration::from_millis(55));
 
@@ -123,11 +121,9 @@ mod tests {
 
     #[test]
     fn fixed_step_clock_clamps_large_frames() {
-        let mut clock = FixedStepClock::new(
-            Duration::from_millis(10),
-            Duration::from_secs_f32(0.1),
-        )
-        .expect("clock should construct");
+        let mut clock =
+            FixedStepClock::new(Duration::from_millis(10), Duration::from_secs_f32(0.1))
+                .expect("clock should construct");
 
         let steps = clock.accumulate_and_consume(Duration::from_secs_f32(1.0));
 

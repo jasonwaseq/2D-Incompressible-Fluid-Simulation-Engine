@@ -16,10 +16,10 @@ use winit::window::{Window, WindowId};
 
 use crate::config::{AppConfig, ConfigError, VisualizationMode};
 use crate::input::MouseState;
-use crate::render::Renderer;
+use crate::render::{GpuSurfaceRenderer, GpuSurfaceRendererError, Renderer};
 use crate::sim::forces::SimCommand;
 use crate::sim::grid::GridError;
-use crate::sim::{FluidSolver, GridSize, SimulationState};
+use crate::sim::{GpuBackendError, GridSize, SimulationRuntime, SimulationState};
 use crate::util::timer::{FixedStepClock, TimerError};
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -29,6 +29,8 @@ pub enum AppError {
     InvalidConfiguration(ConfigError),
     InvalidGrid(GridError),
     InvalidTimer(TimerError),
+    GpuBackend(GpuBackendError),
+    GpuRenderer(GpuSurfaceRendererError),
     EventLoop(EventLoopError),
     WindowCreation(OsError),
     Pixels(pixels::Error),
@@ -41,6 +43,8 @@ impl Display for AppError {
             Self::InvalidConfiguration(err) => write!(f, "invalid configuration: {err}"),
             Self::InvalidGrid(err) => write!(f, "invalid grid: {err}"),
             Self::InvalidTimer(err) => write!(f, "timer setup failed: {err}"),
+            Self::GpuBackend(err) => write!(f, "GPU backend failed: {err}"),
+            Self::GpuRenderer(err) => write!(f, "GPU presenter failed: {err}"),
             Self::EventLoop(err) => write!(f, "event loop failed: {err}"),
             Self::WindowCreation(err) => write!(f, "window creation failed: {err}"),
             Self::Pixels(err) => write!(f, "pixels renderer failed: {err}"),
@@ -55,6 +59,8 @@ impl Error for AppError {
             Self::InvalidConfiguration(err) => Some(err),
             Self::InvalidGrid(err) => Some(err),
             Self::InvalidTimer(err) => Some(err),
+            Self::GpuBackend(err) => Some(err),
+            Self::GpuRenderer(err) => Some(err),
             Self::EventLoop(err) => Some(err),
             Self::WindowCreation(err) => Some(err),
             Self::Pixels(err) => Some(err),
@@ -78,6 +84,18 @@ impl From<TimerError> for AppError {
 impl From<GridError> for AppError {
     fn from(value: GridError) -> Self {
         Self::InvalidGrid(value)
+    }
+}
+
+impl From<GpuBackendError> for AppError {
+    fn from(value: GpuBackendError) -> Self {
+        Self::GpuBackend(value)
+    }
+}
+
+impl From<GpuSurfaceRendererError> for AppError {
+    fn from(value: GpuSurfaceRendererError) -> Self {
+        Self::GpuRenderer(value)
     }
 }
 
@@ -114,12 +132,10 @@ pub struct AppFrameReport {
     pub frame_time_ms: f32,
 }
 
-#[derive(Debug)]
 pub struct App {
     config: AppConfig,
     clock: FixedStepClock,
-    solver: FluidSolver,
-    state: SimulationState,
+    simulation: SimulationRuntime,
     last_frame_ms: f32,
     paused: bool,
     single_step_requested: bool,
@@ -142,8 +158,7 @@ impl App {
 
         Ok(Self {
             paused: config.start_paused,
-            solver: FluidSolver::new(config.simulation.clone()),
-            state: SimulationState::new(grid),
+            simulation: SimulationRuntime::new(config.simulation.clone(), grid)?,
             last_frame_ms: 0.0,
             config,
             clock,
@@ -161,7 +176,7 @@ impl App {
     }
 
     pub fn state(&self) -> &SimulationState {
-        &self.state
+        self.simulation.state()
     }
 
     pub fn visualization_mode(&self) -> VisualizationMode {
@@ -238,26 +253,30 @@ impl App {
     pub fn adjust_dt(&mut self, scale: f32) -> AppResult<()> {
         let dt = (self.config.simulation.dt * scale).clamp(1.0 / 240.0, 0.1);
         self.config.simulation.dt = dt;
-        self.solver.set_dt(dt);
+        self.simulation.set_dt(dt)?;
         self.clock.set_step(Duration::from_secs_f32(dt))?;
         self.clock.clear_accumulator();
         Ok(())
     }
 
     pub fn simulation_position_from_pixel(&self, pixel_x: usize, pixel_y: usize) -> Vec2 {
-        let h = self.state.grid.cell_size;
+        let h = self.state().grid.cell_size;
         Vec2::new((pixel_x as f32 + 0.5) * h, (pixel_y as f32 + 0.5) * h)
     }
 
-    pub fn update(&mut self, real_dt: Duration) -> AppFrameReport {
+    pub fn update(&mut self, real_dt: Duration) -> AppResult<AppFrameReport> {
         self.simulate_frame(real_dt, &[])
     }
 
-    pub fn simulate_frame(&mut self, real_dt: Duration, commands: &[SimCommand]) -> AppFrameReport {
+    pub fn simulate_frame(
+        &mut self,
+        real_dt: Duration,
+        commands: &[SimCommand],
+    ) -> AppResult<AppFrameReport> {
         self.last_frame_ms = real_dt.as_secs_f32() * 1000.0;
 
         if self.take_reset_requested() {
-            self.state.clear();
+            self.simulation.clear()?;
         }
 
         let simulated_steps = if self.paused {
@@ -275,31 +294,36 @@ impl App {
 
         for step_index in 0..simulated_steps {
             let step_commands = if step_index == 0 { commands } else { &[] };
-            self.solver.step(&mut self.state, step_commands);
+            self.simulation.step(step_commands)?;
         }
 
-        AppFrameReport {
+        Ok(AppFrameReport {
             simulated_steps,
             paused: self.paused,
             accumulator_seconds: self.clock.accumulator().as_secs_f32(),
             fixed_dt_seconds: self.clock.step().as_secs_f32(),
             frame_time_ms: self.last_frame_ms,
-        }
+        })
     }
 
     pub fn window_title(&self) -> String {
         let mode = Renderer::mode_label(self.visualization_mode());
         let run_state = if self.paused { "Paused" } else { "Running" };
-        let vectors = if self.show_velocity_vectors() { "vectors:on" } else { "vectors:off" };
+        let vectors = if self.show_velocity_vectors() {
+            "vectors:on"
+        } else {
+            "vectors:off"
+        };
         format!(
-            "Fluid Sim 2D | {mode} | {run_state} | dt={:.4} | frame={:.2}ms | sim={:.2}ms | cfl={:.3} | div={:.3e} | vort={:.3e} | iters={} | force={:.1} | {vectors}",
+            "Fluid Sim 2D | backend={} | {mode} | {run_state} | dt={:.4} | frame={:.2}ms | sim={:.2}ms | cfl={:.3} | div={:.3e} | vort={:.3e} | iters={} | force={:.1} | {vectors}",
+            self.simulation.label(),
             self.dt(),
             self.last_frame_ms(),
-            self.state.stats.step_ms,
-            self.state.stats.cfl,
-            self.state.stats.max_divergence,
-            self.state.stats.max_vorticity,
-            self.state.stats.pressure_iterations,
+            self.state().stats.step_ms,
+            self.state().stats.cfl,
+            self.state().stats.max_divergence,
+            self.state().stats.max_vorticity,
+            self.state().stats.pressure_iterations,
             self.force_scale(),
         )
     }
@@ -325,13 +349,13 @@ impl App {
     }
 }
 
-#[derive(Debug)]
 struct WindowedApp {
     app: App,
     renderer: Renderer,
     mouse: MouseState,
     window: Option<Arc<Window>>,
     pixels: Option<Pixels<'static>>,
+    gpu_surface: Option<GpuSurfaceRenderer>,
     last_redraw_at: Option<Instant>,
     last_stats_log_at: Option<Instant>,
     fatal_error: Option<AppError>,
@@ -347,6 +371,7 @@ impl WindowedApp {
             mouse: MouseState::default(),
             window: None,
             pixels: None,
+            gpu_surface: None,
             last_redraw_at: None,
             last_stats_log_at: None,
             fatal_error: None,
@@ -362,22 +387,39 @@ impl WindowedApp {
         event_loop.exit();
     }
 
-    fn create_window_and_pixels(&mut self, event_loop: &ActiveEventLoop) -> AppResult<()> {
-        let grid = self.app.state.grid;
+    fn create_window_and_renderer(&mut self, event_loop: &ActiveEventLoop) -> AppResult<()> {
+        let grid = self.app.state().grid;
         let scale = self.app.config.render.window_scale as f64;
 
         let window_attributes = Window::default_attributes()
             .with_title(self.app.window_title())
-            .with_inner_size(LogicalSize::new(grid.nx as f64 * scale, grid.ny as f64 * scale))
+            .with_inner_size(LogicalSize::new(
+                grid.nx as f64 * scale,
+                grid.ny as f64 * scale,
+            ))
             .with_min_inner_size(LogicalSize::new(grid.nx as f64, grid.ny as f64));
 
         let window = Arc::new(event_loop.create_window(window_attributes)?);
-        let size = window.inner_size();
-        let surface_texture = SurfaceTexture::new(size.width.max(1), size.height.max(1), window.clone());
-        let pixels = Pixels::new(grid.nx as u32, grid.ny as u32, surface_texture)?;
+        if self.app.simulation.is_gpu() {
+            let backend = self
+                .app
+                .simulation
+                .as_gpu_mut()
+                .expect("GPU backend should be available");
+            backend.set_readback_interval_steps(12);
+            let gpu_surface = GpuSurfaceRenderer::new(window.clone(), backend)?;
+            self.gpu_surface = Some(gpu_surface);
+            self.pixels = None;
+        } else {
+            let size = window.inner_size();
+            let surface_texture =
+                SurfaceTexture::new(size.width.max(1), size.height.max(1), window.clone());
+            let pixels = Pixels::new(grid.nx as u32, grid.ny as u32, surface_texture)?;
+            self.pixels = Some(pixels);
+            self.gpu_surface = None;
+        }
 
         self.window = Some(window);
-        self.pixels = Some(pixels);
         self.last_redraw_at = Some(Instant::now());
         Ok(())
     }
@@ -390,24 +432,34 @@ impl WindowedApp {
         if let Some(pixels) = self.pixels.as_mut() {
             pixels.resize_surface(size.width, size.height)?;
         }
+        if let Some(gpu_surface) = self.gpu_surface.as_mut() {
+            let backend = self
+                .app
+                .simulation
+                .as_gpu()
+                .expect("GPU backend should be available for GPU surface resize");
+            gpu_surface.resize(backend, size);
+        }
 
         Ok(())
     }
 
     fn update_cursor_from_window_position(&mut self, position: PhysicalPosition<f64>) {
-        let Some(pixels) = self.pixels.as_ref() else {
-            return;
-        };
+        if let Some(pixels) = self.pixels.as_ref() {
+            let physical_position = (position.x as f32, position.y as f32);
+            let pixel_position = pixels
+                .window_pos_to_pixel(physical_position)
+                .unwrap_or_else(|outside| pixels.clamp_pixel_pos(outside));
 
-        let physical_position = (position.x as f32, position.y as f32);
-        let pixel_position = pixels
-            .window_pos_to_pixel(physical_position)
-            .unwrap_or_else(|outside| pixels.clamp_pixel_pos(outside));
-
-        let simulation_position =
-            self.app
+            let simulation_position = self
+                .app
                 .simulation_position_from_pixel(pixel_position.0, pixel_position.1);
-        self.mouse.set_cursor_position(simulation_position);
+            self.mouse.set_cursor_position(simulation_position);
+        } else if let Some(gpu_surface) = self.gpu_surface.as_ref() {
+            let simulation_position =
+                gpu_surface.window_position_to_simulation(position, self.app.state().grid);
+            self.mouse.set_cursor_position(simulation_position);
+        }
     }
 
     fn handle_keycode(&mut self, event_loop: &ActiveEventLoop, code: KeyCode) -> AppResult<()> {
@@ -421,8 +473,12 @@ impl WindowedApp {
                 .app
                 .set_visualization_mode(VisualizationMode::VelocityMagnitude),
             KeyCode::Digit3 => self.app.set_visualization_mode(VisualizationMode::Pressure),
-            KeyCode::Digit4 => self.app.set_visualization_mode(VisualizationMode::Divergence),
-            KeyCode::Digit5 => self.app.set_visualization_mode(VisualizationMode::Vorticity),
+            KeyCode::Digit4 => self
+                .app
+                .set_visualization_mode(VisualizationMode::Divergence),
+            KeyCode::Digit5 => self
+                .app
+                .set_visualization_mode(VisualizationMode::Vorticity),
             KeyCode::BracketLeft => self.app.adjust_force_scale(0.9),
             KeyCode::BracketRight => self.app.adjust_force_scale(1.1),
             KeyCode::Minus => self.app.adjust_dt(0.9)?,
@@ -459,15 +515,8 @@ impl WindowedApp {
             self.app.input_dye_amount(),
             self.app.force_scale(),
         );
-        let report = self.app.simulate_frame(real_dt, &commands);
+        let report = self.app.simulate_frame(real_dt, &commands)?;
         self.log_runtime_stats_if_due(&report);
-
-        let Some(pixels) = self.pixels.as_mut() else {
-            return Ok(());
-        };
-
-        self.renderer
-            .draw(self.app.state(), self.app.visualization_mode(), pixels.frame_mut());
 
         let window = self
             .window
@@ -476,8 +525,23 @@ impl WindowedApp {
         window.set_title(&self.app.window_title());
         window.pre_present_notify();
 
-        if let Err(err) = pixels.render() {
-            self.set_fatal_error(event_loop, err.into());
+        if let Some(gpu_surface) = self.gpu_surface.as_mut() {
+            let backend = self
+                .app
+                .simulation
+                .as_gpu()
+                .expect("GPU backend should remain available");
+            gpu_surface.draw(backend, self.app.visualization_mode())?;
+        } else if let Some(pixels) = self.pixels.as_mut() {
+            self.renderer.draw(
+                self.app.state(),
+                self.app.visualization_mode(),
+                pixels.frame_mut(),
+            );
+
+            if let Err(err) = pixels.render() {
+                self.set_fatal_error(event_loop, err.into());
+            }
         }
 
         Ok(())
@@ -496,7 +560,7 @@ impl WindowedApp {
 
         self.last_stats_log_at = Some(now);
 
-        let stats = &self.app.state.stats;
+        let stats = &self.app.state().stats;
         info!(
             "mode={} paused={} frame_ms={:.2} sim_ms={:.2} steps={} cfl={:.3} max_div={:.3e} max_vort={:.3e} iters={}",
             Renderer::mode_label(self.app.visualization_mode()),
@@ -532,7 +596,7 @@ impl ApplicationHandler for WindowedApp {
             return;
         }
 
-        if let Err(err) = self.create_window_and_pixels(event_loop) {
+        if let Err(err) = self.create_window_and_renderer(event_loop) {
             self.set_fatal_error(event_loop, err);
         }
     }
@@ -574,7 +638,8 @@ impl ApplicationHandler for WindowedApp {
             }
             WindowEvent::MouseInput { button, state, .. } => {
                 if button == winit::event::MouseButton::Left {
-                    self.mouse.set_left_button_down(state == ElementState::Pressed);
+                    self.mouse
+                        .set_left_button_down(state == ElementState::Pressed);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -621,12 +686,16 @@ mod tests {
 
         let mut app = App::new(config).expect("app should construct");
 
-        let report = app.update(Duration::from_secs_f32(0.5));
+        let report = app
+            .update(Duration::from_secs_f32(0.5))
+            .expect("update should succeed");
         assert_eq!(report.simulated_steps, 0);
         assert!(report.paused);
 
         app.request_single_step();
-        let report = app.update(Duration::from_secs_f32(0.5));
+        let report = app
+            .update(Duration::from_secs_f32(0.5))
+            .expect("single step should succeed");
         assert_eq!(report.simulated_steps, 1);
     }
 
@@ -636,7 +705,9 @@ mod tests {
         config.simulation.dt = 0.01;
         let mut app = App::new(config).expect("app should construct");
 
-        let report = app.update(Duration::from_secs_f32(0.050));
+        let report = app
+            .update(Duration::from_secs_f32(0.050))
+            .expect("update should succeed");
         assert_eq!(report.simulated_steps, 5);
         assert!((report.frame_time_ms - 50.0).abs() <= 1.0e-3);
         assert_eq!(app.last_frame_ms(), report.frame_time_ms);
@@ -654,7 +725,8 @@ mod tests {
                 amount: 2.0,
                 radius: 6.0,
             }],
-        );
+        )
+        .expect("simulation frame should succeed");
 
         let max_density = app
             .state()
@@ -681,8 +753,14 @@ mod tests {
         let config = AppConfig::default();
         let app = App::new(config).expect("app should construct");
 
-        assert_eq!(app.simulation_position_from_pixel(0, 0), Vec2::new(0.5, 0.5));
-        assert_eq!(app.simulation_position_from_pixel(3, 5), Vec2::new(3.5, 5.5));
+        assert_eq!(
+            app.simulation_position_from_pixel(0, 0),
+            Vec2::new(0.5, 0.5)
+        );
+        assert_eq!(
+            app.simulation_position_from_pixel(3, 5),
+            Vec2::new(3.5, 5.5)
+        );
     }
 
     #[test]
@@ -690,7 +768,8 @@ mod tests {
         let config = AppConfig::default();
         let mut app = App::new(config).expect("app should construct");
 
-        app.update(Duration::from_secs_f32(1.0 / 60.0));
+        app.update(Duration::from_secs_f32(1.0 / 60.0))
+            .expect("update should succeed");
         let title = app.window_title();
 
         assert!(title.contains("frame="));

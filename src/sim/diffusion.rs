@@ -1,5 +1,8 @@
-use super::boundary::{apply_scalar_boundary, apply_velocity_boundary, ScalarBoundary, VelocityBoundary};
-use super::field::{MacVelocity, ScalarField};
+use super::boundary::{
+    apply_scalar_boundary_with_solids, apply_velocity_boundary_with_solids, ScalarBoundary,
+    VelocityBoundary,
+};
+use super::field::{MacVelocity, ScalarField, SolidMask};
 
 pub fn diffuse_scalar(
     source: &ScalarField,
@@ -9,13 +12,46 @@ pub fn diffuse_scalar(
     boundary: ScalarBoundary,
     destination: &mut ScalarField,
 ) {
-    assert_eq!(source.grid(), destination.grid(), "scalar field grids must match");
-    assert!(iterations > 0, "diffusion iterations must be greater than zero");
+    let solids = SolidMask::empty(source.grid());
+    diffuse_scalar_with_solids(
+        source,
+        diffusivity,
+        dt,
+        iterations,
+        boundary,
+        &solids,
+        destination,
+    );
+}
+
+pub fn diffuse_scalar_with_solids(
+    source: &ScalarField,
+    diffusivity: f32,
+    dt: f32,
+    iterations: usize,
+    boundary: ScalarBoundary,
+    solids: &SolidMask,
+    destination: &mut ScalarField,
+) {
+    assert_eq!(
+        source.grid(),
+        destination.grid(),
+        "scalar field grids must match"
+    );
+    assert_eq!(
+        source.grid(),
+        solids.grid(),
+        "scalar field and solid mask grids must match"
+    );
+    assert!(
+        iterations > 0,
+        "diffusion iterations must be greater than zero"
+    );
 
     destination.copy_from(source);
 
     if diffusivity <= 0.0 {
-        apply_scalar_boundary(destination, boundary);
+        apply_scalar_boundary_with_solids(destination, boundary, solids);
         return;
     }
 
@@ -45,7 +81,7 @@ pub fn diffuse_scalar(
             }
         }
 
-        apply_scalar_boundary(destination, boundary);
+        apply_scalar_boundary_with_solids(destination, boundary, solids);
     }
 }
 
@@ -57,13 +93,46 @@ pub fn diffuse_velocity(
     boundary: VelocityBoundary,
     destination: &mut MacVelocity,
 ) {
-    assert_eq!(source.u.grid(), destination.u.grid(), "velocity grids must match");
-    assert!(iterations > 0, "diffusion iterations must be greater than zero");
+    let solids = SolidMask::empty(source.u.grid());
+    diffuse_velocity_with_solids(
+        source,
+        viscosity,
+        dt,
+        iterations,
+        boundary,
+        &solids,
+        destination,
+    );
+}
+
+pub fn diffuse_velocity_with_solids(
+    source: &MacVelocity,
+    viscosity: f32,
+    dt: f32,
+    iterations: usize,
+    boundary: VelocityBoundary,
+    solids: &SolidMask,
+    destination: &mut MacVelocity,
+) {
+    assert_eq!(
+        source.u.grid(),
+        destination.u.grid(),
+        "velocity grids must match"
+    );
+    assert_eq!(
+        source.u.grid(),
+        solids.grid(),
+        "velocity and solid mask grids must match"
+    );
+    assert!(
+        iterations > 0,
+        "diffusion iterations must be greater than zero"
+    );
 
     destination.copy_from(source);
 
     if viscosity <= 0.0 {
-        apply_velocity_boundary(destination, boundary);
+        apply_velocity_boundary_with_solids(destination, boundary, solids);
         return;
     }
 
@@ -114,7 +183,7 @@ pub fn diffuse_velocity(
             }
         }
 
-        apply_velocity_boundary(destination, boundary);
+        apply_velocity_boundary_with_solids(destination, boundary, solids);
     }
 }
 

@@ -9,4 +9,7 @@ pub mod sim;
 pub mod util;
 
 pub use app::{App, AppError, AppFrameReport};
-pub use config::{AppConfig, ConfigError, InputConfig, RenderConfig, SimulationConfig, VisualizationMode};
+pub use config::{
+    AppConfig, ConfigError, InputConfig, PressureSolverKind, RenderConfig, ScalarAdvectionKind,
+    SimulationBackendKind, SimulationConfig, VisualizationMode,
+};

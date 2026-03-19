@@ -1,4 +1,6 @@
 use glam::Vec2;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 use crate::config::SimulationConfig;
 
@@ -75,12 +77,52 @@ impl SolverEffect for BuiltinEffect {
 }
 
 pub fn compute_vorticity(velocity: &MacVelocity, vorticity: &mut ScalarField) {
-    assert_eq!(velocity.u.grid(), vorticity.grid(), "velocity and vorticity grids must match");
+    assert_eq!(
+        velocity.u.grid(),
+        vorticity.grid(),
+        "velocity and vorticity grids must match"
+    );
 
     let grid = velocity.u.grid();
     let inv_2h = 0.5 / grid.cell_size;
+    #[cfg(feature = "parallel")]
+    let row_stride = grid.scalar_row_stride();
+
+    #[cfg(feature = "parallel")]
+    {
+        vorticity
+            .as_mut_slice()
+            .par_chunks_mut(row_stride)
+            .enumerate()
+            .for_each(|(raw_j, row)| {
+                if raw_j == 0 || raw_j == grid.ny + 1 {
+                    return;
+                }
+
+                let j = raw_j - 1;
+                let j_minus = j.saturating_sub(1);
+                let j_plus = (j + 1).min(grid.ny - 1);
+
+                for i in 0..grid.nx {
+                    let i_minus = i.saturating_sub(1);
+                    let i_plus = (i + 1).min(grid.nx - 1);
+
+                    let left = velocity.cell_center_velocity(i_minus, j);
+                    let right = velocity.cell_center_velocity(i_plus, j);
+                    let up = velocity.cell_center_velocity(i, j_minus);
+                    let down = velocity.cell_center_velocity(i, j_plus);
+
+                    let dv_dx = (right.y - left.y) * inv_2h;
+                    let du_dy = (down.x - up.x) * inv_2h;
+                    row[i + 1] = dv_dx - du_dy;
+                }
+            });
+    }
+
+    #[cfg(not(feature = "parallel"))]
     vorticity.fill(0.0);
 
+    #[cfg(not(feature = "parallel"))]
     for j in 0..grid.ny {
         let j_minus = j.saturating_sub(1);
         let j_plus = (j + 1).min(grid.ny - 1);
@@ -117,13 +159,12 @@ pub fn max_abs_vorticity(vorticity: &ScalarField) -> f32 {
     max_value
 }
 
-pub fn apply_buoyancy(
-    velocity: &mut MacVelocity,
-    density: &ScalarField,
-    dt: f32,
-    strength: f32,
-) {
-    assert_eq!(velocity.u.grid(), density.grid(), "velocity and density grids must match");
+pub fn apply_buoyancy(velocity: &mut MacVelocity, density: &ScalarField, dt: f32, strength: f32) {
+    assert_eq!(
+        velocity.u.grid(),
+        density.grid(),
+        "velocity and density grids must match"
+    );
 
     if strength <= 0.0 {
         return;
@@ -140,8 +181,12 @@ pub fn apply_buoyancy(
 
             // Screen-space y grows downward, so negative v lifts smoke upward.
             let impulse = -0.5 * dt * strength * local_density;
-            velocity.v.set_face(i, j, velocity.v.get_face(i, j) + impulse);
-            velocity.v.set_face(i, j + 1, velocity.v.get_face(i, j + 1) + impulse);
+            velocity
+                .v
+                .set_face(i, j, velocity.v.get_face(i, j) + impulse);
+            velocity
+                .v
+                .set_face(i, j + 1, velocity.v.get_face(i, j + 1) + impulse);
         }
     }
 }
@@ -152,7 +197,11 @@ pub fn apply_vorticity_confinement(
     dt: f32,
     strength: f32,
 ) {
-    assert_eq!(velocity.u.grid(), vorticity.grid(), "velocity and vorticity grids must match");
+    assert_eq!(
+        velocity.u.grid(),
+        vorticity.grid(),
+        "velocity and vorticity grids must match"
+    );
 
     if strength <= 0.0 {
         return;
@@ -172,9 +221,11 @@ pub fn apply_vorticity_confinement(
             let i_minus = i.saturating_sub(1);
             let i_plus = (i + 1).min(grid.nx - 1);
 
-            let abs_x = (vorticity.get_cell(i_plus, j).abs() - vorticity.get_cell(i_minus, j).abs())
+            let abs_x = (vorticity.get_cell(i_plus, j).abs()
+                - vorticity.get_cell(i_minus, j).abs())
                 * inv_2h;
-            let abs_y = (vorticity.get_cell(i, j_plus).abs() - vorticity.get_cell(i, j_minus).abs())
+            let abs_y = (vorticity.get_cell(i, j_plus).abs()
+                - vorticity.get_cell(i, j_minus).abs())
                 * inv_2h;
 
             let gradient = Vec2::new(abs_x, abs_y);
@@ -261,8 +312,16 @@ mod tests {
 
         compute_vorticity(&velocity, &mut vorticity);
 
-        assert_relative_eq!(vorticity.get_cell(5, 5), 2.0 * angular_speed, epsilon = 1.0e-5);
-        assert_relative_eq!(max_abs_vorticity(&vorticity), 2.0 * angular_speed, epsilon = 1.0e-5);
+        assert_relative_eq!(
+            vorticity.get_cell(5, 5),
+            2.0 * angular_speed,
+            epsilon = 1.0e-5
+        );
+        assert_relative_eq!(
+            max_abs_vorticity(&vorticity),
+            2.0 * angular_speed,
+            epsilon = 1.0e-5
+        );
     }
 
     #[test]

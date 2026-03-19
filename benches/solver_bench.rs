@@ -1,8 +1,8 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use fluid_sim_2d::sim::{FluidSolver, GridSize, SimulationState};
 use fluid_sim_2d::sim::forces::SimCommand;
+use fluid_sim_2d::sim::{FluidSolver, GridSize, SimulationState};
 use fluid_sim_2d::SimulationConfig;
 use glam::Vec2;
 
@@ -10,11 +10,7 @@ fn main() {
     println!("fluid-sim-2d manual benchmark");
     println!("build profile: release-like benchmark harness");
 
-    run_solver_benchmark(
-        "solver_step_160x90",
-        SimulationConfig::default(),
-        240,
-    );
+    run_solver_benchmark("solver_step_160x90", SimulationConfig::default(), 240);
 
     run_solver_benchmark(
         "solver_step_256x144",

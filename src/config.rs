@@ -78,6 +78,18 @@ pub struct SimulationConfig {
     #[arg(long = "iterations", default_value_t = 40)]
     pub solver_iterations: usize,
 
+    #[arg(long, value_enum, default_value_t = SimulationBackendKind::Cpu)]
+    pub backend: SimulationBackendKind,
+
+    #[arg(long, value_enum, default_value_t = PressureSolverKind::GaussSeidel)]
+    pub pressure_solver: PressureSolverKind,
+
+    #[arg(long = "pressure-tolerance", default_value_t = 1.0e-3)]
+    pub pressure_tolerance: f32,
+
+    #[arg(long, value_enum, default_value_t = ScalarAdvectionKind::SemiLagrangian)]
+    pub scalar_advection: ScalarAdvectionKind,
+
     #[arg(long, default_value_t = 0.0)]
     pub buoyancy: f32,
 
@@ -95,6 +107,10 @@ impl Default for SimulationConfig {
             viscosity: 0.0001,
             diffusion: 0.0,
             solver_iterations: 40,
+            backend: SimulationBackendKind::Cpu,
+            pressure_solver: PressureSolverKind::GaussSeidel,
+            pressure_tolerance: 1.0e-3,
+            scalar_advection: ScalarAdvectionKind::SemiLagrangian,
             buoyancy: 0.0,
             vorticity_confinement: 0.0,
         }
@@ -143,6 +159,13 @@ impl SimulationConfig {
             return Err(ConfigError::ZeroDimension("solver_iterations"));
         }
 
+        if !(self.pressure_tolerance.is_finite() && self.pressure_tolerance > 0.0) {
+            return Err(ConfigError::NonPositiveValue {
+                field: "pressure_tolerance",
+                value: self.pressure_tolerance,
+            });
+        }
+
         if !self.buoyancy.is_finite() || self.buoyancy < 0.0 {
             return Err(ConfigError::NegativeValue {
                 field: "buoyancy",
@@ -162,12 +185,48 @@ impl SimulationConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SimulationBackendKind {
+    Cpu,
+    Gpu,
+}
+
+impl Default for SimulationBackendKind {
+    fn default() -> Self {
+        Self::Cpu
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum VisualizationMode {
     Density,
     VelocityMagnitude,
     Pressure,
     Divergence,
     Vorticity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PressureSolverKind {
+    GaussSeidel,
+    Pcg,
+}
+
+impl Default for PressureSolverKind {
+    fn default() -> Self {
+        Self::GaussSeidel
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ScalarAdvectionKind {
+    SemiLagrangian,
+    MacCormack,
+}
+
+impl Default for ScalarAdvectionKind {
+    fn default() -> Self {
+        Self::SemiLagrangian
+    }
 }
 
 impl Default for VisualizationMode {
@@ -284,7 +343,10 @@ impl Error for ConfigError {}
 mod tests {
     use clap::Parser;
 
-    use super::{AppConfig, ConfigError, VisualizationMode};
+    use super::{
+        AppConfig, ConfigError, PressureSolverKind, ScalarAdvectionKind, SimulationBackendKind,
+        VisualizationMode,
+    };
 
     #[test]
     fn default_config_is_valid() {
@@ -298,13 +360,28 @@ mod tests {
             "fluid-sim-2d",
             "--visualization-mode",
             "vorticity",
+            "--backend",
+            "gpu",
+            "--pressure-solver",
+            "pcg",
+            "--scalar-advection",
+            "mac-cormack",
             "--grid-width",
             "320",
             "--buoyancy",
             "1.5",
         ]);
 
-        assert_eq!(config.render.visualization_mode, VisualizationMode::Vorticity);
+        assert_eq!(
+            config.render.visualization_mode,
+            VisualizationMode::Vorticity
+        );
+        assert_eq!(config.simulation.backend, SimulationBackendKind::Gpu);
+        assert_eq!(config.simulation.pressure_solver, PressureSolverKind::Pcg);
+        assert_eq!(
+            config.simulation.scalar_advection,
+            ScalarAdvectionKind::MacCormack
+        );
         assert_eq!(config.simulation.grid_width, 320);
         assert_eq!(config.simulation.buoyancy, 1.5);
     }
@@ -314,12 +391,31 @@ mod tests {
         let mut config = AppConfig::default();
         config.simulation.vorticity_confinement = -1.0;
 
-        let error = config.validate().expect_err("negative effect strength should fail validation");
+        let error = config
+            .validate()
+            .expect_err("negative effect strength should fail validation");
         assert_eq!(
             error,
             ConfigError::NegativeValue {
                 field: "vorticity_confinement",
                 value: -1.0,
+            }
+        );
+    }
+
+    #[test]
+    fn simulation_config_rejects_non_positive_pressure_tolerance() {
+        let mut config = AppConfig::default();
+        config.simulation.pressure_tolerance = 0.0;
+
+        let error = config
+            .validate()
+            .expect_err("non-positive pressure tolerance should fail");
+        assert_eq!(
+            error,
+            ConfigError::NonPositiveValue {
+                field: "pressure_tolerance",
+                value: 0.0,
             }
         );
     }

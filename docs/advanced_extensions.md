@@ -1,37 +1,33 @@
 # Advanced Extensions Roadmap
 
-This phase adds a solver-effect pipeline plus two concrete effects:
+The engine now includes:
 
 - buoyancy
 - vorticity confinement
+- active solid and moving-obstacle boundary handling
+- selectable CPU pressure solvers
+- a GPU compute backend with direct GPU presentation for the main window path
 
 That pipeline is the intended insertion point for future force-like effects that
 operate on `SimulationState` without contaminating rendering or input code.
 
 ## Next Solver Features
 
-- Solid obstacles:
-  Extend `SolidMask` from a passive field into active boundary-aware obstacle
-  handling for advection, projection, and wall velocities.
+- Stronger GPU pressure solvers:
+  Keep the current red/black Gauss-Seidel GPU path as the baseline and explore
+  multigrid or better preconditioned iterative methods on the GPU.
 
-- Moving obstacles:
-  Add per-cell obstacle velocities and incorporate them into wall boundary terms
-  during pressure projection.
-
-- Pressure solver variants:
-  Split the current pressure path behind a dedicated pressure-solver interface.
-  Keep Gauss-Seidel as the baseline and add PCG or multigrid as alternatives.
-
-- Lower-dissipation advection:
-  Add MacCormack or BFECC as optional advection modes for dye and velocity.
+- Lower-dissipation velocity advection:
+  Extend beyond scalar MacCormack and explore BFECC or MacCormack-style
+  velocity transport with careful limiter and stability work.
 
 - Multithreading:
   Parallelize read-mostly passes first:
   advection, divergence, vorticity, and visualization reductions.
 
-- GPU backend:
-  Preserve the CPU solver as the reference implementation and mirror the same
-  state layout/stage ordering in a future compute backend.
+- GPU diagnostics:
+  Reduce or eliminate the remaining periodic GPU-to-CPU diagnostic readbacks by
+  moving reductions and debug summaries onto the GPU.
 
 ## Longer-Term Research Paths
 

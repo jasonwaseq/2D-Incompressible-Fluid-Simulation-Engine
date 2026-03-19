@@ -42,12 +42,7 @@ impl Renderer {
         self.show_velocity_vectors = show_velocity_vectors;
     }
 
-    pub fn draw(
-        &mut self,
-        state: &SimulationState,
-        mode: VisualizationMode,
-        frame: &mut [u8],
-    ) {
+    pub fn draw(&mut self, state: &SimulationState, mode: VisualizationMode, frame: &mut [u8]) {
         let grid = state.grid;
         assert_eq!(
             frame.len(),
@@ -65,8 +60,15 @@ impl Renderer {
 
         for j in 0..grid.ny {
             for i in 0..grid.nx {
+                if state.solids.is_solid_cell(i, j) {
+                    put_pixel(frame, grid.nx, i, j, rgba(32, 32, 32));
+                    continue;
+                }
+
                 let rgba = match mode {
-                    VisualizationMode::Density => fire(state.density.get_cell(i, j) / density_scale),
+                    VisualizationMode::Density => {
+                        fire(state.density.get_cell(i, j) / density_scale)
+                    }
                     VisualizationMode::VelocityMagnitude => {
                         let speed = state.velocity.cell_center_velocity(i, j).length();
                         grayscale(speed / velocity_scale)
@@ -151,7 +153,14 @@ fn put_pixel(frame: &mut [u8], width: usize, x: usize, y: usize, color: [u8; 4])
     frame[index..index + 4].copy_from_slice(&color);
 }
 
-fn draw_line(frame: &mut [u8], width: usize, height: usize, start: Vec2, end: Vec2, color: [u8; 4]) {
+fn draw_line(
+    frame: &mut [u8],
+    width: usize,
+    height: usize,
+    start: Vec2,
+    end: Vec2,
+    color: [u8; 4],
+) {
     let delta = end - start;
     let steps = delta.abs().max_element().ceil().max(1.0) as usize;
 
@@ -181,12 +190,18 @@ mod tests {
             Renderer::mode_label(VisualizationMode::VelocityMagnitude),
             "Velocity"
         );
-        assert_eq!(Renderer::mode_label(VisualizationMode::Pressure), "Pressure");
+        assert_eq!(
+            Renderer::mode_label(VisualizationMode::Pressure),
+            "Pressure"
+        );
         assert_eq!(
             Renderer::mode_label(VisualizationMode::Divergence),
             "Divergence"
         );
-        assert_eq!(Renderer::mode_label(VisualizationMode::Vorticity), "Vorticity");
+        assert_eq!(
+            Renderer::mode_label(VisualizationMode::Vorticity),
+            "Vorticity"
+        );
     }
 
     #[test]
@@ -217,6 +232,8 @@ mod tests {
 
         renderer.draw(&state, VisualizationMode::VelocityMagnitude, &mut frame);
 
-        assert!(frame.chunks_exact(4).any(|pixel| pixel[0] == 255 && pixel[1] == 255 && pixel[2] == 255));
+        assert!(frame
+            .chunks_exact(4)
+            .any(|pixel| pixel[0] == 255 && pixel[1] == 255 && pixel[2] == 255));
     }
 }

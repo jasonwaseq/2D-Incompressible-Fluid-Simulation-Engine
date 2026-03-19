@@ -2,20 +2,24 @@
 name = "fluid-sim-2d"
 version = "0.1.0"
 edition = "2021"
-license = "MIT OR Apache-2.0"
 description = "A modular 2D incompressible fluid simulation engine in Rust."
 publish = false
 
 [features]
-default = []
+default = ["parallel"]
+parallel = ["dep:rayon"]
 sanity-checks = []
 
 [dependencies]
+bytemuck = { version = "1.16", features = ["derive"] }
 clap = { version = "4.5", features = ["derive"] }
 env_logger = "0.11"
 glam = "0.30"
 log = "0.4"
 pixels = "0.15"
+pollster = "0.3"
+rayon = { version = "1.10", optional = true }
+wgpu = "0.19"
 winit = "0.30"
 
 [dev-dependencies]

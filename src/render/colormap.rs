@@ -18,10 +18,18 @@ pub fn fire(value: f32) -> [u8; 4] {
 
     if clamped < 0.33 {
         let t = clamped / 0.33;
-        rgba(lerp_channel(12, 160, t), lerp_channel(20, 40, t), lerp_channel(32, 20, t))
+        rgba(
+            lerp_channel(12, 160, t),
+            lerp_channel(20, 40, t),
+            lerp_channel(32, 20, t),
+        )
     } else if clamped < 0.66 {
         let t = (clamped - 0.33) / 0.33;
-        rgba(lerp_channel(160, 255, t), lerp_channel(40, 170, t), lerp_channel(20, 20, t))
+        rgba(
+            lerp_channel(160, 255, t),
+            lerp_channel(40, 170, t),
+            lerp_channel(20, 20, t),
+        )
     } else {
         let t = (clamped - 0.66) / 0.34;
         rgba(255, lerp_channel(170, 245, t), lerp_channel(20, 220, t))
@@ -33,10 +41,18 @@ pub fn signed_blue_red(value: f32) -> [u8; 4] {
 
     if clamped >= 0.0 {
         let t = clamped;
-        rgba(lerp_channel(240, 210, t), lerp_channel(240, 45, t), lerp_channel(240, 38, t))
+        rgba(
+            lerp_channel(240, 210, t),
+            lerp_channel(240, 45, t),
+            lerp_channel(240, 38, t),
+        )
     } else {
         let t = -clamped;
-        rgba(lerp_channel(240, 38, t), lerp_channel(240, 90, t), lerp_channel(240, 210, t))
+        rgba(
+            lerp_channel(240, 38, t),
+            lerp_channel(240, 90, t),
+            lerp_channel(240, 210, t),
+        )
     }
 }
 

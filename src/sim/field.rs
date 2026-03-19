@@ -1,4 +1,6 @@
 use glam::Vec2;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 use super::grid::{FieldShape, GridSize};
 
@@ -222,28 +224,44 @@ impl FaceFieldY {
 #[derive(Debug, Clone)]
 pub struct SolidMask {
     grid: GridSize,
-    data: Vec<u8>,
+    solid: Vec<u8>,
+    velocity: Vec<Vec2>,
 }
 
 impl SolidMask {
     pub fn empty(grid: GridSize) -> Self {
         Self {
             grid,
-            data: vec![0; grid.scalar_shape().len()],
+            solid: vec![0; grid.scalar_shape().len()],
+            velocity: vec![Vec2::ZERO; grid.scalar_shape().len()],
         }
     }
 
+    pub fn grid(&self) -> GridSize {
+        self.grid
+    }
+
     pub fn fill(&mut self, is_solid: bool) {
-        self.data.fill(u8::from(is_solid));
+        self.solid.fill(u8::from(is_solid));
+        if !is_solid {
+            self.velocity.fill(Vec2::ZERO);
+        }
+    }
+
+    pub fn clear_motion(&mut self) {
+        self.velocity.fill(Vec2::ZERO);
     }
 
     pub fn is_solid_raw(&self, i: usize, j: usize) -> bool {
-        self.data[self.grid.scalar_index_raw(i, j)] != 0
+        self.solid[self.grid.scalar_index_raw(i, j)] != 0
     }
 
     pub fn set_solid_raw(&mut self, i: usize, j: usize, is_solid: bool) {
         let index = self.grid.scalar_index_raw(i, j);
-        self.data[index] = u8::from(is_solid);
+        self.solid[index] = u8::from(is_solid);
+        if !is_solid {
+            self.velocity[index] = Vec2::ZERO;
+        }
     }
 
     pub fn is_solid_cell(&self, i: usize, j: usize) -> bool {
@@ -254,6 +272,81 @@ impl SolidMask {
     pub fn set_solid_cell(&mut self, i: usize, j: usize, is_solid: bool) {
         let (raw_i, raw_j) = self.grid.cell_to_scalar_raw(i, j);
         self.set_solid_raw(raw_i, raw_j, is_solid);
+    }
+
+    pub fn cell_velocity(&self, i: usize, j: usize) -> Vec2 {
+        let (raw_i, raw_j) = self.grid.cell_to_scalar_raw(i, j);
+        self.raw_velocity(raw_i, raw_j)
+    }
+
+    pub fn set_cell_velocity(&mut self, i: usize, j: usize, velocity: Vec2) {
+        let (raw_i, raw_j) = self.grid.cell_to_scalar_raw(i, j);
+        self.set_raw_velocity(raw_i, raw_j, velocity);
+    }
+
+    pub fn raw_velocity(&self, i: usize, j: usize) -> Vec2 {
+        self.velocity[self.grid.scalar_index_raw(i, j)]
+    }
+
+    pub fn set_raw_velocity(&mut self, i: usize, j: usize, velocity: Vec2) {
+        let index = self.grid.scalar_index_raw(i, j);
+        self.velocity[index] = velocity;
+    }
+
+    pub fn is_fluid_cell(&self, i: usize, j: usize) -> bool {
+        !self.is_solid_cell(i, j)
+    }
+
+    pub fn u_face_obstacle_velocity(&self, i: usize, j: usize) -> Option<f32> {
+        assert!(
+            i <= self.grid.nx && j < self.grid.ny,
+            "u-face index out of bounds: ({i}, {j})"
+        );
+
+        let mut sum = 0.0_f32;
+        let mut count = 0;
+
+        if i > 0 && self.is_solid_cell(i - 1, j) {
+            sum += self.cell_velocity(i - 1, j).x;
+            count += 1;
+        }
+
+        if i < self.grid.nx && self.is_solid_cell(i, j) {
+            sum += self.cell_velocity(i, j).x;
+            count += 1;
+        }
+
+        if count > 0 {
+            Some(sum / count as f32)
+        } else {
+            None
+        }
+    }
+
+    pub fn v_face_obstacle_velocity(&self, i: usize, j: usize) -> Option<f32> {
+        assert!(
+            i < self.grid.nx && j <= self.grid.ny,
+            "v-face index out of bounds: ({i}, {j})"
+        );
+
+        let mut sum = 0.0_f32;
+        let mut count = 0;
+
+        if j > 0 && self.is_solid_cell(i, j - 1) {
+            sum += self.cell_velocity(i, j - 1).y;
+            count += 1;
+        }
+
+        if j < self.grid.ny && self.is_solid_cell(i, j) {
+            sum += self.cell_velocity(i, j).y;
+            count += 1;
+        }
+
+        if count > 0 {
+            Some(sum / count as f32)
+        } else {
+            None
+        }
     }
 }
 
@@ -293,8 +386,33 @@ impl MacVelocity {
         let v_data = self.v.as_slice();
         let u_stride = grid.u_row_stride();
         let v_stride = grid.v_row_stride();
+
+        #[cfg(feature = "parallel")]
+        {
+            return (0..grid.ny)
+                .into_par_iter()
+                .map(|j| {
+                    let u_row = (j + 1) * u_stride;
+                    let v_row = (j + 1) * v_stride;
+                    let v_next_row = v_row + v_stride;
+                    let mut row_max = 0.0_f32;
+
+                    for i in 0..grid.nx {
+                        let u_center = 0.5 * (u_data[u_row + i + 1] + u_data[u_row + i + 2]);
+                        let v_center = 0.5 * (v_data[v_row + i + 1] + v_data[v_next_row + i + 1]);
+                        let speed = (u_center * u_center + v_center * v_center).sqrt();
+                        row_max = row_max.max(speed);
+                    }
+
+                    row_max
+                })
+                .reduce(|| 0.0_f32, f32::max);
+        }
+
+        #[cfg(not(feature = "parallel"))]
         let mut max_speed = 0.0_f32;
 
+        #[cfg(not(feature = "parallel"))]
         for j in 0..grid.ny {
             let u_row = (j + 1) * u_stride;
             let v_row = (j + 1) * v_stride;
@@ -307,6 +425,7 @@ impl MacVelocity {
             }
         }
 
+        #[cfg(not(feature = "parallel"))]
         max_speed
     }
 }
@@ -357,6 +476,18 @@ mod tests {
         assert!(!mask.is_solid_cell(1, 1));
         mask.set_solid_cell(1, 1, true);
         assert!(mask.is_solid_cell(1, 1));
+    }
+
+    #[test]
+    fn solid_mask_tracks_obstacle_velocity() {
+        let grid = GridSize::new(3, 3, 1.0).expect("grid should be valid");
+        let mut mask = SolidMask::empty(grid);
+        mask.set_solid_cell(1, 1, true);
+        mask.set_cell_velocity(1, 1, Vec2::new(2.0, -1.5));
+
+        assert_eq!(mask.cell_velocity(1, 1), Vec2::new(2.0, -1.5));
+        assert_eq!(mask.u_face_obstacle_velocity(1, 1), Some(2.0));
+        assert_eq!(mask.v_face_obstacle_velocity(1, 1), Some(-1.5));
     }
 
     #[test]

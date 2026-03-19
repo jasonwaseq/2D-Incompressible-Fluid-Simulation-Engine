@@ -14,6 +14,9 @@ pub struct SimulationStats {
 pub struct SimulationScratch {
     pub scalar0: ScalarField,
     pub scalar1: ScalarField,
+    pub scalar2: ScalarField,
+    pub scalar3: ScalarField,
+    pub scalar4: ScalarField,
     pub velocity0: MacVelocity,
     pub velocity1: MacVelocity,
 }
@@ -23,6 +26,9 @@ impl SimulationScratch {
         Self {
             scalar0: ScalarField::zeros(grid),
             scalar1: ScalarField::zeros(grid),
+            scalar2: ScalarField::zeros(grid),
+            scalar3: ScalarField::zeros(grid),
+            scalar4: ScalarField::zeros(grid),
             velocity0: MacVelocity::zeros(grid),
             velocity1: MacVelocity::zeros(grid),
         }
@@ -31,6 +37,9 @@ impl SimulationScratch {
     pub fn clear(&mut self) {
         self.scalar0.fill(0.0);
         self.scalar1.fill(0.0);
+        self.scalar2.fill(0.0);
+        self.scalar3.fill(0.0);
+        self.scalar4.fill(0.0);
         self.velocity0.fill(0.0);
         self.velocity1.fill(0.0);
     }

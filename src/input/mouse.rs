@@ -50,7 +50,9 @@ impl MouseState {
             return Vec::new();
         }
 
-        let previous = self.previous_cursor_position.unwrap_or(self.cursor_position);
+        let previous = self
+            .previous_cursor_position
+            .unwrap_or(self.cursor_position);
         let delta = (self.cursor_position - previous) * force_scale;
         self.previous_cursor_position = Some(self.cursor_position);
 
@@ -87,7 +89,11 @@ mod tests {
 
         assert_eq!(commands.len(), 2);
         match &commands[0] {
-            SimCommand::AddDye { position, amount, radius } => {
+            SimCommand::AddDye {
+                position,
+                amount,
+                radius,
+            } => {
                 assert_eq!(*position, Vec2::new(12.0, 21.0));
                 assert_eq!(*amount, 2.0);
                 assert_eq!(*radius, 5.0);

@@ -252,9 +252,27 @@ mod tests {
     fn grid_reports_expected_shapes() {
         let grid = GridSize::new(4, 3, 1.0).expect("grid should be valid");
 
-        assert_eq!(grid.scalar_shape(), FieldShape { width: 6, height: 5 });
-        assert_eq!(grid.u_shape(), FieldShape { width: 7, height: 5 });
-        assert_eq!(grid.v_shape(), FieldShape { width: 6, height: 6 });
+        assert_eq!(
+            grid.scalar_shape(),
+            FieldShape {
+                width: 6,
+                height: 5
+            }
+        );
+        assert_eq!(
+            grid.u_shape(),
+            FieldShape {
+                width: 7,
+                height: 5
+            }
+        );
+        assert_eq!(
+            grid.v_shape(),
+            FieldShape {
+                width: 6,
+                height: 6
+            }
+        );
     }
 
     #[test]
